@@ -224,3 +224,24 @@ test('late reconciliation failure cannot overwrite a finalized order or leave un
   assert.equal(p.status, 'verified');
   assert.equal(await f.store.one('SELECT * FROM locks WHERE key=?', 'u'), null);
 });
+
+test('late submission timeout cannot overwrite an independently reconciled fill', async () => {
+  const f = await setup();
+  let rejectSubmit: any, entered: any;
+  const began = new Promise<void>((r) => (entered = r));
+  f.exchange.submit = async () => {
+    f.qty = 0.15;
+    entered();
+    return new Promise((_, reject) => (rejectSubmit = reject));
+  };
+  const approval = f.service.approve('u', 'p', 'SELL 0.050 BTCUSDT');
+  await began;
+  await f.service.reconcile('u', 'p');
+  f.exchange.query = async () => {
+    throw new Error('query now unavailable');
+  };
+  rejectSubmit(new Error('late submission timeout'));
+  const result = await approval;
+  assert.equal(result.status, 'verified');
+  assert.equal(await f.store.one('SELECT * FROM locks WHERE key=?', 'u'), null);
+});

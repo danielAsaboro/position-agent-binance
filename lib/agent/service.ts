@@ -376,7 +376,7 @@ export class AgentService {
         await client.submit(terms, proposal.client_id);
       } catch (e: any) {
         await this.store.run(
-          "UPDATE proposals SET status='unknown',receipt=? WHERE id=? AND owner=?",
+          "UPDATE proposals SET status='unknown',receipt=? WHERE id=? AND owner=? AND status IN ('executing','unknown')",
           JSON.stringify({
             message:
               'Submission outcome is unconfirmed. Querying the original client order ID.',
