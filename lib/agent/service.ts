@@ -349,6 +349,7 @@ export class AgentService {
         throw new Error(
           'Existing orders or TP/SL orders need review in Binance before approving. The agent does not cancel protective orders.',
         );
+      approvalCheck(snapshot, fresh, Date.now(), m.body.maxSlippageBps);
       // Re-evaluate trigger validity as well as price and quantity. Never dispatch a obsolete proposal.
       const a = assess(m.body, fresh);
       if (
@@ -430,7 +431,9 @@ export class AgentService {
             : order.status === 'FILLED'
               ? 'verified'
               : 'partial';
-      const receipt = {
+      const now = Date.now();
+      const receipt = JSON.stringify({
+        verificationId: crypto.randomUUID(),
         environment: client.credentials!.environment,
         orderId: String(order.orderId),
         clientOrderId: p.client_id,
@@ -441,54 +444,94 @@ export class AgentService {
         position,
         expectedRemainingQuantity: expected,
         positionMatched: matched,
-        verifiedAt: Date.now(),
-      };
-      await this.store.run(
-        'UPDATE proposals SET status=?,receipt=? WHERE id=? AND owner=?',
-        status,
-        JSON.stringify(receipt),
-        id,
-        owner,
-      );
-      await this.store.run(
-        'UPDATE mandates SET snapshot=?,last_check=? WHERE id=? AND owner=?',
-        JSON.stringify(position),
-        Date.now(),
-        p.mandate_id,
-        owner,
-      );
+        verifiedAt: now,
+      });
+      const update = this.store.db
+        .prepare(
+          "UPDATE proposals SET status=?,receipt=? WHERE id=? AND owner=? AND status IN ('executing','unknown')",
+        )
+        .bind(status, receipt, id, owner);
       if (['verified', 'partial', 'unfilled'].includes(status)) {
+        // One transaction owns finalization. A delayed reader cannot overwrite a
+        // terminal result, duplicate its effects, or release an unrelated lock.
+        const owns =
+          'EXISTS (SELECT 1 FROM proposals WHERE id=? AND owner=? AND receipt=?)';
+        const batch = [
+          update,
+          this.store.db
+            .prepare(
+              `UPDATE mandates SET snapshot=?,last_check=? WHERE id=? AND owner=? AND ${owns}`,
+            )
+            .bind(
+              JSON.stringify(position),
+              now,
+              p.mandate_id,
+              owner,
+              id,
+              owner,
+              receipt,
+            ),
+        ];
         const profitTrigger = p.body.assessment.reasons.some((r: string) =>
           r.includes('profit reached'),
         );
         if (position.quantity === 0 || (profitTrigger && executed > 0))
-          await this.store.run(
-            'UPDATE mandates SET status=?,version=version+1 WHERE id=? AND owner=?',
-            position.quantity === 0 ? 'closed' : 'paused',
-            p.mandate_id,
-            owner,
+          batch.push(
+            this.store.db
+              .prepare(
+                `UPDATE mandates SET status=?,version=version+1 WHERE id=? AND owner=? AND ${owns}`,
+              )
+              .bind(
+                position.quantity === 0 ? 'closed' : 'paused',
+                p.mandate_id,
+                owner,
+                id,
+                owner,
+                receipt,
+              ),
           );
-        await this.store.event(
-          owner,
-          'execution',
+        const message =
           status === 'verified'
             ? 'Order fill and remaining position verified'
             : status === 'partial'
               ? 'Partial fill verified; remainder requires a new approval'
-              : 'Order ended without a fill',
-          p.mandate_id,
-          receipt,
+              : 'Order ended without a fill';
+        batch.push(
+          this.store.db
+            .prepare(
+              `INSERT INTO events(id,owner,mandate_id,kind,message,details,created_at) SELECT ?,?,?,?,?,?,? WHERE ${owns}`,
+            )
+            .bind(
+              crypto.randomUUID(),
+              owner,
+              p.mandate_id,
+              'execution',
+              message,
+              receipt,
+              now,
+              id,
+              owner,
+              receipt,
+            ),
         );
-        await this.store.run(
-          "UPDATE proposals SET status='invalidated' WHERE owner=? AND status='pending'",
-          owner,
+        batch.push(
+          this.store.db
+            .prepare(
+              `UPDATE proposals SET status='invalidated' WHERE owner=? AND status='pending' AND ${owns}`,
+            )
+            .bind(owner, id, owner, receipt),
         );
-        await this.store.unlock(owner, id);
-      }
+        batch.push(
+          this.store.db
+            .prepare(`DELETE FROM locks WHERE key=? AND holder=? AND ${owns}`)
+            .bind(owner, id, id, owner, receipt),
+        );
+        await this.store.db.batch(batch);
+      } else await update.run();
       return this.store.proposal(owner, id);
     } catch (e: any) {
       await this.store.run(
-        "UPDATE proposals SET status='unknown',receipt=? WHERE id=? AND owner=?",
+        "UPDATE proposals SET status='unknown',receipt=? WHERE id=? AND owner=? AND status IN ('executing','unknown')",
         JSON.stringify({
           message:
             'Exchange outcome remains unknown. No duplicate order will be sent.',

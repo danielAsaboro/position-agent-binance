@@ -195,3 +195,32 @@ test('rejection cannot race an already claimed approval', async () => {
   await f.store.lock('u', 'p');
   await assert.rejects(() => f.service.reject('u', 'p'), /reconciliation/);
 });
+
+test('late reconciliation failure cannot overwrite a finalized order or leave unknown unlocked', async () => {
+  const f = await setup();
+  await f.store.run("UPDATE proposals SET status='executing' WHERE id='p'");
+  await f.store.lock('u', 'p');
+  f.qty = 0.15;
+  let rejectSlow: any;
+  let entered: any;
+  const began = new Promise<void>((r) => (entered = r));
+  const original = f.exchange.query;
+  let calls = 0;
+  f.exchange.query = async () => {
+    calls++;
+    if (calls === 1) return original();
+    entered();
+    return new Promise((_, reject) => {
+      rejectSlow = reject;
+    });
+  };
+  const fast = f.service.reconcile('u', 'p');
+  const slow = f.service.reconcile('u', 'p');
+  await began;
+  await fast;
+  rejectSlow(new Error('late timeout'));
+  await slow;
+  const p = await f.store.proposal('u', 'p');
+  assert.equal(p.status, 'verified');
+  assert.equal(await f.store.one('SELECT * FROM locks WHERE key=?', 'u'), null);
+});

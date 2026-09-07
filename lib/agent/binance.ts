@@ -92,10 +92,18 @@ export class Binance {
       throw new Error(
         'Hedge mode is not supported. Use an existing one-way account.',
       );
-    const p = positions.find(
+    if (!Array.isArray(positions)) throw new Error('Invalid position response');
+    const returnedPosition = positions.find(
       (x: any) => x.symbol === symbol && x.positionSide === 'BOTH',
     );
-    if (!p) throw new Error('Position is no longer available');
+    // A successful positionRisk read omits closed symbols with no open orders.
+    const p = returnedPosition ?? {
+      positionAmt: '0',
+      entryPrice: '0',
+      liquidationPrice: '0',
+      unRealizedProfit: '0',
+      positionSide: 'BOTH',
+    };
     const s = info.symbols.find(
       (x: any) =>
         x.symbol === symbol &&
