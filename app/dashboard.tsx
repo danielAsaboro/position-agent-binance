@@ -36,6 +36,16 @@ const money = (n: number | undefined) =>
       }).format(n);
 const pct = (n: number | undefined) =>
   n === undefined ? '—' : `${(n * 100).toFixed(4)}%`;
+const readableError = (message: string) => {
+  if (message.includes('Exchange clock unavailable (403)'))
+    return 'This hosted runtime cannot reach Binance (HTTP 403). Use the local app for authenticated demo trading.';
+  if (
+    message.includes('internal error; reference') ||
+    message.includes('Exchange returned an unreadable response')
+  )
+    return 'Binance is temporarily unreachable. Saved mandates and verified receipts remain available.';
+  return message;
+};
 async function api(path: string, body?: unknown) {
   const r = await fetch(`/api/agent/${path}`, {
     method: body === undefined ? 'GET' : 'POST',
@@ -43,7 +53,7 @@ async function api(path: string, body?: unknown) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const d: any = await r.json();
-  if (!r.ok) throw new Error(d.error ?? 'Request failed');
+  if (!r.ok) throw new Error(readableError(d.error ?? 'Request failed'));
   return d;
 }
 export default function Dashboard() {
@@ -61,9 +71,14 @@ export default function Dashboard() {
     [selected, setSelected] = useState(''),
     [proposal, setProposal] = useState<any>(null),
     [token, setToken] = useState(''),
-    [needsSignIn, setNeedsSignIn] = useState(false);
+    [needsSignIn, setNeedsSignIn] = useState(false),
+    [webMcpReady, setWebMcpReady] = useState(false);
   const active =
     state.mandates.find((m: any) => m.id === selected) ?? state.mandates[0];
+  const verifiedProposal = state.proposals.find(
+    (p: any) =>
+      p.mandate_id === active?.id && p.status === 'verified' && p.receipt,
+  );
   const refresh = async () => {
     try {
       setState(await api('state'));
@@ -113,11 +128,15 @@ export default function Dashboard() {
     const context = (document as any).modelContext;
     if (!context?.registerTool) return;
     const lifecycle = new AbortController();
-    const register = (tool: any) =>
-      Promise.resolve(
-        context.registerTool(tool, { signal: lifecycle.signal }),
-      ).catch(() => {});
-    register({
+    const register = async (tool: any) => {
+      try {
+        await context.registerTool(tool, { signal: lifecycle.signal });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const readTool = register({
       name: 'read_position_desk',
       description:
         'Read saved mandates, observed positions, and proposal outcomes.',
@@ -129,7 +148,7 @@ export default function Dashboard() {
       annotations: { readOnlyHint: true },
       execute: async () => await api('state'),
     });
-    register({
+    const assessTool = register({
       name: 'assess_managed_position',
       description:
         'Assess an existing mandate and stage a proposal. Does not approve or execute an order.',
@@ -150,6 +169,9 @@ export default function Dashboard() {
         return result;
       },
     });
+    void Promise.all([readTool, assessTool]).then((results) =>
+      setWebMcpReady(results.every(Boolean)),
+    );
     return () => lifecycle.abort();
   }, []);
   const line = market?.candles ?? [];
@@ -210,6 +232,12 @@ export default function Dashboard() {
               ? `${state.connection.environment.toUpperCase()} connected`
               : 'Exchange disconnected'}
             <button
+              className="header-agent-button"
+              onClick={() => setModal('agent')}
+            >
+              <Terminal size={15} /> Agent OS
+            </button>
+            <button
               className="icon-button"
               aria-label="Connection settings"
               onClick={() => setModal('connection')}
@@ -220,11 +248,18 @@ export default function Dashboard() {
         </header>
         <section className="page-heading">
           <div>
-            <div className="eyebrow">YOUR POSITION, YOUR MANDATE</div>
+            <div className="eyebrow">GOAL-BASED FUTURES EXECUTION</div>
             <h1>
-              Position desk<span className="heading-dot">.</span>
+              {active
+                ? 'The agent is managing the trade'
+                : 'Bring the position. Set the mandate'}
+              <span className="heading-dot">.</span>
             </h1>
-            <p>Keep the goal in view as the market moves.</p>
+            <p>
+              {active
+                ? 'It watches the live position, proposes bounded trades and verifies every approved fill on Binance.'
+                : 'Open a futures position in Binance Demo, then let the agent reduce or close it as your limits change.'}
+            </p>
           </div>
           <Button
             className="primary-button"
@@ -233,9 +268,61 @@ export default function Dashboard() {
             }
           >
             <Plus size={17} />
-            {state.connection ? 'Manage a position' : 'Connect Binance'}
+            {state.connection
+              ? active
+                ? 'Manage another position'
+                : 'Import open position'
+              : 'Connect Binance Demo'}
           </Button>
         </section>
+        <section
+          className="trading-contract"
+          aria-label="How Position Agent trades"
+        >
+          <div>
+            <span className="contract-number">01</span>
+            <strong>You open the position</strong>
+            <small>Directly in Binance Demo</small>
+          </div>
+          <ChevronRight size={16} />
+          <div>
+            <span className="contract-number">02</span>
+            <strong>The agent proposes a trade</strong>
+            <small>Hold, reduce or close</small>
+          </div>
+          <ChevronRight size={16} />
+          <div>
+            <span className="contract-number">03</span>
+            <strong>You approve exact terms</strong>
+            <small>Symbol, side, size and price</small>
+          </div>
+          <ChevronRight size={16} />
+          <div>
+            <span className="contract-number">04</span>
+            <strong>Binance proves the fill</strong>
+            <small>Order, trades and remaining position</small>
+          </div>
+        </section>
+        <button
+          className={`agent-runtime ${webMcpReady ? 'is-live' : ''}`}
+          onClick={() => setModal('agent')}
+          type="button"
+        >
+          <Terminal size={16} />
+          <span>
+            <strong>
+              {webMcpReady ? 'Agent OS tools connected' : 'Connect Agent OS'}
+            </strong>
+            <small>
+              {webMcpReady
+                ? 'Read the desk and assess mandates through WebMCP'
+                : 'Use the scoped MCP bridge to observe and propose'}
+            </small>
+          </span>
+          <span className="agent-runtime-status">
+            {webMcpReady ? '2 TOOLS LIVE' : 'SET UP'}
+          </span>
+        </button>
         {error && (
           <div className="error-banner" role="alert">
             {error}
@@ -294,11 +381,13 @@ export default function Dashboard() {
           <section className="main-panel">
             <div className="panel-heading">
               <div>
-                <span className="small-label">POSITION MONITOR</span>
+                <span className="small-label">
+                  {active ? 'LIVE FUTURES POSITION' : 'POSITION MONITOR'}
+                </span>
                 <h2>{active ? active.symbol : 'Your next move starts here'}</h2>
               </div>
-              <span className="pill">
-                {active ? active.status : 'Awaiting connection'}
+              <span className={`pill ${active ? 'trading-pill' : ''}`}>
+                {active ? `Agent ${active.status}` : 'Awaiting position'}
               </span>
             </div>
             {active ? (
@@ -350,6 +439,27 @@ export default function Dashboard() {
                     </button>
                   ))}
                 </div>
+                {verifiedProposal && (
+                  <div className="execution-proof">
+                    <span className="proof-icon">
+                      <Check size={16} />
+                    </span>
+                    <div>
+                      <small>LATEST AGENT TRADE · BINANCE DEMO</small>
+                      <strong>
+                        {verifiedProposal.body.terms.side}{' '}
+                        {verifiedProposal.receipt.executedQuantity}{' '}
+                        {verifiedProposal.body.terms.symbol} filled at{' '}
+                        {money(verifiedProposal.receipt.averagePrice)}
+                      </strong>
+                      <span>
+                        Exchange order {verifiedProposal.receipt.orderId} ·
+                        remaining position verified
+                      </span>
+                    </div>
+                    <span className="verified-label">VERIFIED</span>
+                  </div>
+                )}
               </>
             ) : (
               <div className="empty-intro">
@@ -361,15 +471,15 @@ export default function Dashboard() {
                   <br />A plan that stays with it.
                 </h3>
                 <p>
-                  Connect an existing position and set your limits. The agent
-                  checks what changed, proposes an adjustment, and verifies the
-                  result after you approve.
+                  This agent starts after you open a Binance futures position.
+                  It can place reduce-only trades to keep that position inside
+                  your exposure, loss, profit, funding and deadline limits.
                 </p>
                 <Button
                   variant="outline"
                   onClick={() => setModal('connection')}
                 >
-                  Connect your exchange <ArrowUpRight size={16} />
+                  Connect Binance Demo <ArrowUpRight size={16} />
                 </Button>
               </div>
             )}
@@ -431,7 +541,12 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="workflow-strip">
-              {['Observe', 'Assess', 'Your approval', 'Verify'].map((s, i) => (
+              {[
+                'Live position',
+                'Agent decision',
+                'Exact approval',
+                'Verified fill',
+              ].map((s, i) => (
                 <div key={s}>
                   <span>{String(i + 1).padStart(2, '0')}</span>
                   {s}
@@ -488,7 +603,9 @@ export default function Dashboard() {
                     <br />
                     This tab checks every minute while open. Off-page checks
                     require the monitor runner.
-                    {active.last_error && <b>{active.last_error}</b>}
+                    {active.last_error && (
+                      <b>{readableError(active.last_error)}</b>
+                    )}
                   </span>
                 </div>
                 <Button
@@ -561,8 +678,9 @@ export default function Dashboard() {
                 <div className="callout">
                   <ShieldCheck size={18} />
                   <p>
-                    No position is opened by this agent. You choose an existing
-                    position to manage.
+                    The agent never opens exposure or increases leverage. It
+                    only sends approved reduce-only orders against a position
+                    you already opened in Binance.
                   </p>
                 </div>
               </>
@@ -570,7 +688,7 @@ export default function Dashboard() {
           </aside>
         </div>
         <section className="activity-panel">
-          <Tabs defaultValue="decisions">
+          <Tabs defaultValue="decisions" className="activity-tabs">
             <TabsList>
               <TabsTrigger value="decisions">Decisions & proposals</TabsTrigger>
               <TabsTrigger value="activity">Activity & receipts</TabsTrigger>

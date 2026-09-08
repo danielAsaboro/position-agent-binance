@@ -2,6 +2,8 @@
 
 A persistent position-management workflow for Binance Agent OS clients. Connect an existing Binance USD-M **one-way USDT perpetual** position, define a mandate, compare proposed adjustments, approve an exact order, and reconcile the exchange result.
 
+Unlike a signal bot, Position Agent begins after the user opens a position. It manages that position against a persistent goal spanning exposure, retained size, loss, profit, funding, slippage, and a holding deadline. The agent can propose hold, reduce, close, or review; only the user can approve an exchange order.
+
 ## Run locally
 
 Requires Node 24 or newer.
@@ -31,6 +33,11 @@ Connect demo credentials through **Connect Binance**. The app verifies a real ac
 
 ## Agent OS / MCP
 
+The browser registers two WebMCP tools in supported clients:
+
+- `read_position_desk` reads the connected environment, mandates, observations, proposals, and receipts.
+- `assess_managed_position` observes one saved mandate and stages a decision or proposal. It cannot approve or execute an order.
+
 Configure your supported MCP client to run `node /absolute/path/to/scripts/mcp-bridge.mjs` with `POSITION_AGENT_URL` and `POSITION_AGENT_TOKEN`. Generate the token in the app's **Agent OS** dialog. See `skills/position-agent/SKILL.md` for the operating workflow.
 
 The bridge provides `list_position_mandates`, `assess_position`, `reconcile_position_order`, and `monitor_positions`. It exposes no approval tool; tokens are denied access to order approval and account modifications server-side. AI reasoning runs in your connected MCP client. The app's calculations and execution constraints are deterministic.
@@ -55,6 +62,16 @@ For an independent Cloudflare deployment, configure your own D1 binding and a sc
 
 ## Verification
 
-`npm test` covers constraints, signed funding, quantity precision, credential encryption, owner isolation, execution locking, concurrent approvals, timeout reconciliation, and receipt matching. Exchange behavior in unit tests uses test doubles; it is not live proof. `npm run typecheck` and `npm run build` validate the production source.
+The repository test suite covers constraints, signed funding, quantity precision, credential encryption, owner isolation, execution locking, concurrent approvals, timeout reconciliation, and receipt matching. Exchange behavior in unit tests uses test doubles.
 
-Public market reads have been exercised. Authenticated demo reads, actual order fills, a connected Agent OS client, and persistent off-page monitoring require separate real-environment proof.
+A separate authenticated Binance Demo run proved the vertical slice against the exchange: Position Agent observed a 0.002 BTCUSDT long, proposed a 0.0008 BTC reduce-only IOC adjustment for a 100 USDT exposure ceiling, received exact human approval, verified the fill, reconciled the remaining 0.0012 BTC position, and returned hold on the next assessment. The private submission workspace retains the exchange receipt; credentials and personal tokens are never committed.
+
+The supported in-app browser also registered and invoked the WebMCP position-desk tool against that authenticated state. A retained off-page runner and hosted Binance connectivity remain separate deployment checks; the current private Sites runtime receives HTTP 403 from Binance and must not be presented as a working hosted exchange connection.
+
+## Safety boundary
+
+- The agent cannot open positions, increase leverage, transfer assets, or withdraw.
+- Agent tokens cannot approve orders or change account settings.
+- Every proposal expires after 60 seconds and is revalidated against fresh position and price data.
+- Submission is idempotent: the client order ID is persisted before dispatch, and timeouts are reconciled instead of retried.
+- Standard or algorithmic open orders block execution so protective orders are never silently displaced.

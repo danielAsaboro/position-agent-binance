@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: 'Position Agent | Binance Position Desk',
   description:
-    'Manage existing positions against your goals, with explicit approval and verified exchange outcomes.',
+    'An Agent OS workflow that manages existing Binance positions against explicit goals, exact human approvals, and verified exchange outcomes.',
 };
 
 export default function RootLayout({
